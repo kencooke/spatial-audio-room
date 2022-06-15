@@ -30,12 +30,15 @@ input {
 }
 
 .player {
-  width: 480px;
-  height: 320px;
+  width: 320px;
+  height: 240px;
+  margin: 4px;
+  border: 1px solid gray;
 }
 
 .player-name {
   margin: 8px 0;
+  text-align: center;
 }
 
 #success-alert, #success-alert-with-token {

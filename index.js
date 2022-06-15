@@ -1,5 +1,5 @@
 //
-//  Created by Ken Cooke on 3/11/22.
+//  Created by Ken Cooke on 6/11/22.
 //  Copyright 2022 High Fidelity, Inc.
 //
 //  The contents of this file are PROPRIETARY AND CONFIDENTIAL, and may not be
@@ -16,13 +16,6 @@ console.log('WebAssembly SIMD is ' + (simdSupported ? 'supported' : 'not support
 const encodedTransformSupported = !!window.RTCRtpScriptTransform;
 console.log('WebRTC Encoded Transform is ' + (encodedTransformSupported ? 'supported' : 'not supported') + ' by this browser.');
 
-// patch RTCPeerConnection to enable insertable streams
-let _RTCPeerConnection = RTCPeerConnection;
-RTCPeerConnection = function(...config) {
-    if (config.length) config[0].encodedInsertableStreams = true;
-    return new _RTCPeerConnection(...config);
-}
-
 // create Agora client
 let client = AgoraRTC.createClient({
     mode: "rtc",
@@ -30,7 +23,7 @@ let client = AgoraRTC.createClient({
 });
 
 let localTracks = {
-    //videoTrack: null,
+    videoTrack: null,
     audioTrack: null
 };
 
@@ -68,12 +61,12 @@ $(()=>{
 
 $("#username").change(function (e) {
     options.username = $("#username").val();
+    $("#local-player-name").text(options.username);
 
     // if already connected, update my name
     if (localTracks.audioTrack) {
-        usernames[options.uid] = options.username;
-        client.sendStreamMessage((new TextEncoder).encode(usernames[options.uid]));
-        console.log('%cusername changed, sent stream-message of:', 'color:cyan', usernames[options.uid]);
+        client.sendStreamMessage((new TextEncoder).encode(options.username));
+        console.log('%cusername changed, sent stream-message of:', 'color:cyan', options.username);
     }
 })
 
@@ -136,9 +129,6 @@ threshold.oninput = () => {
     document.getElementById("threshold-value").value = threshold.value;
 }
 
-let canvasControl;
-const canvasDimensions = { width: 8, height: 8 };   // in meters
-let elements = [];
 let usernames = {};
 
 let audioElement = undefined;
@@ -148,59 +138,6 @@ let hifiSources = {};
 let hifiNoiseGate = undefined;  // mic stream connects here
 let hifiListener = undefined;   // hifiSource connects here
 let hifiLimiter = undefined;    // additional sounds connect here
-let hifiPosition = {
-    x: 2.0 * Math.random() - 1.0,
-    y: 2.0 * Math.random() - 1.0,
-    o: 0.0
-};
-
-let worker = undefined;
-
-function listenerMetadata(position) {
-    let data = new DataView(new ArrayBuffer(5));
-
-    let qx = Math.round(position.x * 256.0);    // x in Q7.8
-    let qy = Math.round(position.y * 256.0);    // y in Q7.8
-    let qo = Math.round(position.o * (128.0 / Math.PI));    // brad in Q7
-
-    data.setInt16(0, qx);
-    data.setInt16(2, qy);
-    data.setInt8(4, qo);
-
-    if (encodedTransformSupported) {
-        worker.postMessage({
-            operation: 'metadata',
-            metadata: data.buffer
-        }, [data.buffer]);
-    } else {
-        metadata = data.buffer;
-    }
-}
-
-function sourceMetadata(buffer, uid) {
-    let data = new DataView(buffer);
-
-    let x = data.getInt16(0) * (1/256.0);
-    let y = data.getInt16(2) * (1/256.0);
-    let o = data.getInt8(4) * (Math.PI / 128.0);
-
-    // update hifiSource position
-    let hifiSource = hifiSources[uid];
-    if (hifiSource !== undefined) {
-        hifiSource._x = x;
-        hifiSource._y = y;
-        hifiSource._o = o;
-        setPosition(hifiSource);
-    }
-
-    // update canvas position
-    let e = elements.find(e => e.uid === uid);
-    if (e !== undefined) {
-        e.x = 0.5 + (x / canvasDimensions.width);
-        e.y = 0.5 - (y / canvasDimensions.height);
-        e.o = o;
-    }
-}
 
 function setThreshold(value) {
     if (hifiNoiseGate !== undefined) {
@@ -209,60 +146,49 @@ function setThreshold(value) {
     }
 }
 
-// Fast approximation of Math.atan2(y, x)
-// rel |error| < 4e-5, smooth (exact at octant boundary)
-// for y=0 x=0, returns NaN
-function fastAtan2(y, x) {
-    let ax = Math.abs(x);
-    let ay = Math.abs(y);
-    let x1 = Math.min(ax, ay) / Math.max(ax, ay);
+//
+// Sortable layout of video elements
+//
+let sortable = Sortable.create(playerlist, {
+    sort: true,
+    direction: "horizontal",
+    onChange: updatePositions,  // update positions on drag-and-drop
+});
 
-    // 9th-order odd polynomial approximation to atan(x) over x=[0,1]
-    // evaluate using Estrin's method
-    let x2 = x1 * x1;
-    let x3 = x2 * x1;
-    let x4 = x2 * x2;
-    let r =  0.024065681985187 * x4 + 0.186155334995372;
-    let t = -0.092783165661197 * x4 - 0.332039687921915;
-    r = r * x2 + t;
-    r = r * x3 + x1;
+let resizeObserver = new ResizeObserver(updatePositions);
+resizeObserver.observe(playerlist); // update positions on resize
 
-    // use octant to reconstruct result in [-PI,PI]
-    if (ay > ax) r = 1.570796326794897 - r;
-    if (x < 0.0) r = 3.141592653589793 - r;
-    if (y < 0.0) r = -r;
-    return r;
-}
+// recompute azimuth, based on current video layout
+function updatePositions() {
+    let order = sortable.toArray();
 
-function angleWrap(angle) {
-    return angle - 2 * Math.PI * Math.floor((angle + Math.PI) / (2 * Math.PI));
-}
+    // compute horizontal bounds
+    let xmin = 999999;
+    let xmax = 0;
+    order.forEach((uid, i) => {
+        let rect = sortable.el.children[i].getClientRects();
+        xmin = Math.min(xmin, rect[0].left);
+        xmax = Math.max(xmax, rect[0].right);
+    });
 
-function setPosition(hifiSource) {
-    let dx = hifiSource._x - hifiPosition.x;
-    let dy = hifiSource._y - hifiPosition.y;
+    // center the horizontal axis at zero
+    let xoff = (xmin + xmax) / 2;
+    xmin -= xoff;
+    xmax -= xoff;
 
-    let distanceSquared = dx * dx + dy * dy;
-    let distance = Math.sqrt(distanceSquared);
-    let angle = (distanceSquared < 1e-30) ? 0.0 : fastAtan2(dx, dy);
+    // compute azimuth from center of video element
+    order.forEach((uid, i) => {
+        let rect = sortable.el.children[i].getClientRects();
+        let x = (rect[0].left + rect[0].right) / 2 - xoff;
+        let azimuth = (Math.PI / 2) * (x / xmax);   // linear, not atan(x)
 
-    let azimuth = angleWrap(angle - hifiPosition.o);
-
-    hifiSource.parameters.get('azimuth').value = azimuth;
-    hifiSource.parameters.get('distance').value = distance;
-}
-
-function updatePositions(elements) {
-    // only update the listener
-    let e = elements.find(e => e.clickable === true);
-    if (e !== undefined) {
-
-        // transform canvas to audio coordinates
-        hifiPosition.x = (e.x - 0.5) * canvasDimensions.width;
-        hifiPosition.y = -(e.y - 0.5) * canvasDimensions.height;
-        hifiPosition.o = e.o;
-        listenerMetadata(hifiPosition);
-    }
+        // update hifiSource
+        let hifiSource = hifiSources[uid];
+        if (hifiSource !== undefined) {
+            hifiSource.parameters.get('azimuth').value = azimuth;
+            console.log("Set uid =", uid, "to azimuth =", (azimuth * 180) / Math.PI);
+        }
+    });
 }
 
 async function join() {
@@ -273,30 +199,6 @@ async function join() {
     client.on("user-published", handleUserPublished);
     client.on("user-unpublished", handleUserUnpublished);
 
-    // join a channel
-    options.uid = await client.join(options.appid, options.channel, options.token || null);
-    usernames[options.uid] = options.username;
-
-    //
-    // canvas GUI
-    //
-    let canvas = document.getElementById('canvas');
-
-    elements.push({
-        icon: 'listenerIcon',
-        x: 0.5 + (hifiPosition.x / canvasDimensions.width),
-        y: 0.5 - (hifiPosition.y / canvasDimensions.height),
-        o: hifiPosition.o,
-        radius: 0.02,
-        alpha: 0.5,
-        clickable: true,
-        uid: options.uid,
-    });
-
-    canvasControl = new CanvasControl(canvas, elements, updatePositions);
-    canvasControl.draw();
-
-    // create local tracks
     let audioConfig = {
         AEC: isAecEnabled,
         AGC: false,
@@ -308,7 +210,21 @@ async function join() {
             stereo: false,
         },
     };
-    localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack(audioConfig);
+
+    let videoConfig = {
+        encoderConfig: "240p_1",
+    };
+
+    // Join a channel and create local tracks. Best practice is to use Promise.all and run them concurrently.
+    [options.uid, localTracks.audioTrack, localTracks.videoTrack] = await Promise.all([
+        client.join(options.appid, options.channel, options.token || null, options.uid || null),
+        AgoraRTC.createMicrophoneAudioTrack(audioConfig),
+        AgoraRTC.createCameraVideoTrack(videoConfig),
+    ]);
+
+    // Play the local video track
+    localTracks.videoTrack.play("local-player");
+    $("#local-player-name").text(options.username);
 
     //
     // route mic stream through Web Audio noise gate
@@ -331,42 +247,11 @@ async function join() {
     await client.publish(Object.values(localTracks));
     console.log("publish success");
 
-    //
-    // Insertable Streams / Encoded Transform
-    //
-    let senders = client._p2pChannel.connection.peerConnection.getSenders();
-    let sender = senders.find(e => e.track?.kind === 'audio');
-
-    if (encodedTransformSupported) {
-
-        sender.transform = new RTCRtpScriptTransform(worker, { operation: 'sender' });
-
-    } else {
-
-        const senderStreams = sender.createEncodedStreams();
-        const readableStream = senderStreams.readable;
-        const writableStream = senderStreams.writable;
-        senderTransform(readableStream, writableStream);
-    }
-
-    //
-    // HACK! set user radius based on volume level
-    // TODO: reimplement in a performant way...
-    //
-    AgoraRTC.setParameter("AUDIO_VOLUME_INDICATION_INTERVAL", 20);
-    client.enableAudioVolumeIndicator();
-    client.on("volume-indicator", volumes => {
-        volumes.forEach((volume, index) => {
-            let e = elements.find(e => e.uid === volume.uid);
-            if (e !== undefined)
-                e.radius = 0.02 + 0.04 * volume.level/100;
-        });
-    })
-
     // on broadcast from remote user, set corresponding username
     client.on("stream-message", (uid, data) => {
         usernames[uid] = (new TextDecoder).decode(data);
-        console.log('%creceived stream-message from:', 'color:cyan', usernames[uid]);
+        $(`#player-name-${uid}`).text(usernames[uid]);
+        console.log("%creceived stream-message from:", "color:cyan", usernames[uid]);
     });
 }
 
@@ -382,8 +267,10 @@ async function leave() {
     }
 
     // remove remote users and player views
-    remoteUsers = {};
-    $("#remote-playerlist").html("");
+    for (const [id, user] of Object.entries(remoteUsers)) {
+        delete remoteUsers[id];
+        $(`#player-wrapper-${id}`).remove();
+    }
 
     // leave the channel
     await client.leave();
@@ -391,8 +278,6 @@ async function leave() {
     $("#local-player-name").text("");
     $("#join").attr("disabled", false);
     $("#leave").attr("disabled", true);
-
-    elements.length = 0;
 
     hifiSources = {};
     stopSpatialAudio();
@@ -420,16 +305,19 @@ async function subscribe(user, mediaType) {
     await client.subscribe(user, mediaType);
     console.log("subscribe uid:", uid);
 
-    //    if (mediaType === 'video') {
-    //        const player = $(`
-    //      <div id="player-wrapper-${uid}">
-    //        <p class="player-name">remoteUser(${uid})</p>
-    //        <div id="player-${uid}" class="player"></div>
-    //      </div>
-    //    `);
-    //        $("#remote-playerlist").append(player);
-    //        user.videoTrack.play(`player-${uid}`);
-    //    }
+    if (mediaType === 'video') {
+        const player = $(`
+        <div id="player-wrapper-${uid}" data-id="${uid}">
+            <div id="player-${uid}" class="player"></div>
+            <p id="player-name-${uid}" class="player-name"></p>
+        </div>
+        `);
+        $("#playerlist").append(player);
+        $(`#player-name-${uid}`).text(usernames[uid]);
+        updatePositions();
+
+        user.videoTrack.play(`player-${uid}`);
+    }
 
     if (mediaType === 'audio') {
 
@@ -441,49 +329,20 @@ async function subscribe(user, mediaType) {
 
         let hifiSource = new AudioWorkletNode(audioContext, 'wasm-hrtf-input');
         hifiSources[uid] = hifiSource;
+        updatePositions();
 
         sourceNode.connect(hifiSource).connect(hifiListener);
-
-        //
-        // Insertable Streams / Encoded Transform
-        //
-        let receivers = client._p2pChannel.connection.peerConnection.getReceivers();
-        let receiver = receivers.find(e => e.track?.id === mediaStreamTrack.id && e.track?.kind === 'audio');
-
-        if (encodedTransformSupported) {
-
-            receiver.transform = new RTCRtpScriptTransform(worker, { operation: 'receiver', uid });
-
-        } else {
-
-            const receiverStreams = receiver.createEncodedStreams();
-            const readableStream = receiverStreams.readable;
-            const writableStream = receiverStreams.writable;
-            receiverTransform(readableStream, writableStream, uid);
-        }
-
-        elements.push({
-            icon: 'sourceIcon',
-            radius: 0.02,
-            alpha: 0.5,
-            clickable: false,
-            uid,
-        });
     }
 
     // broadcast my name
-    client.sendStreamMessage((new TextEncoder).encode(usernames[options.uid]));
-    console.log('%csent stream-message of:', 'color:cyan', usernames[options.uid]);
+    client.sendStreamMessage((new TextEncoder).encode(options.username));
+    console.log('%csent stream-message of:', 'color:cyan', options.username);
 }
 
 async function unsubscribe(user) {
     const uid = user.uid;
-
     delete hifiSources[uid];
-
-    // find and remove this uid
-    let i = elements.findIndex(e => e.uid === uid);
-    elements.splice(i, 1);
+    updatePositions();
 
     console.log("unsubscribe uid:", uid);
 }
@@ -497,7 +356,7 @@ async function unsubscribe(user) {
 let loopback = undefined;
 async function startEchoCancellation(element, context) {
 
-    loopback = [new _RTCPeerConnection, new _RTCPeerConnection];
+    loopback = [new RTCPeerConnection, new RTCPeerConnection];
 
     // connect Web Audio to destination
     let destination = context.createMediaStreamDestination();
@@ -538,11 +397,6 @@ async function startSpatialAudio() {
 
     audioElement = new Audio();
 
-    if (encodedTransformSupported) {
-        worker = new Worker('worker.js');
-        worker.onmessage = event => sourceMetadata(event.data.metadata, event.data.uid);
-    }
-
     try {
         audioContext = new AudioContext({ sampleRate: 48000 });
     } catch (e) {
@@ -577,7 +431,6 @@ function stopSpatialAudio() {
     $("#sound").attr("hidden", true);
     stopEchoCancellation();
     audioContext.close();
-    worker && worker.terminate();
 }
 
 let audioBuffer = null;

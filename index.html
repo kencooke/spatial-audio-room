@@ -4,15 +4,15 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta http-equiv="X-UA-Compatible" content="ie=edge">
-        <title>Spatial Audio Room</title>
+        <title>Spatial Video Room</title>
         <link rel="stylesheet" href="./vendor/bootstrap.min.css">
         <link rel="stylesheet" href="./index.css">
     </head>
     <body>
         <div class="container-fluid banner">
-            <p class="banner-text">Spatial Audio Room</p>
+            <p class="banner-text">Spatial Video Room</p>
         </div>
-        <div class="container">
+        <div class="container-fluid">
             <form id="join-form">
                 <div class="row join-info-group">
                     <div class="col-sm" hidden>
@@ -35,10 +35,11 @@
                     <input id='threshold' type='range' min=-96 max=0 value=-40 step=1>Threshold=<output id="threshold-value">-40</output>
                 </div>
             </form>
-            <div class="canvas-group" style="width:100%; text-align: center;">
-                <canvas id="canvas" oncontextmenu="return false;"></canvas>
-                <img src="listener.svg" class="icon" alt="listener" id="listenerIcon" hidden>
-                <img src="source.svg" class="icon" alt="source" id="sourceIcon" hidden>
+            <div id="playerlist" class="row justify-content-center">
+                <div id="player-wrapper-0" data-id="0">
+                    <div id="local-player" class="player"></div>
+                    <p id="local-player-name" class="player-name"></p>
+                </div>
             </div>
             <div id="success-alert" class="alert alert-success" role="alert">
                 <span>You have successfully joined the room </span>
@@ -46,9 +47,8 @@
         </div>
         <script src="./vendor/jquery-3.4.1.min.js"></script>
         <script src="./vendor/bootstrap.bundle.min.js"></script>
+        <script src="./vendor/Sortable.min.js"></script>
         <script src="./vendor/AgoraRTC_N-4.11.1.js"></script>
-        <script src="./canvas-control.js"></script>
         <script src="./index.js"></script>
-        <script src="./transform.js"></script>
     </body>
 </html>
