@@ -114,6 +114,19 @@ $("#aec").click(async function(e) {
     }
 })
 
+let voiceFocus = undefined;
+let isNsEnabled = false;
+$("#ns").click(async function(e) {
+    // toggle the state
+    isNsEnabled = !isNsEnabled;
+    $("#ns").css("background-color", isNsEnabled ? "purple" : "");
+
+    if (voiceFocus !== undefined) {
+        voiceFocus.port.postMessage({ message: isNsEnabled ? "enable" : "disable" });
+        console.log("VoiceFocus:", isNsEnabled ? "ENABLED" : "disabled");
+    }
+})
+
 let isMuteEnabled = false;
 $("#mute").click(function(e) {
     // toggle the state
@@ -129,12 +142,12 @@ $("#sound").click(function(e) {
 })
 
 // threshold slider
-threshold.oninput = () => {
-    if (!isMuteEnabled) {
-        setThreshold(threshold.value);
-    }
-    document.getElementById("threshold-value").value = threshold.value;
-}
+// threshold.oninput = () => {
+//     if (!isMuteEnabled) {
+//         setThreshold(threshold.value);
+//     }
+//     document.getElementById("threshold-value").value = threshold.value;
+// }
 
 let canvasControl;
 const canvasDimensions = { width: 8, height: 8 };   // in meters
@@ -319,10 +332,36 @@ async function join() {
     let sourceNode = audioContext.createMediaStreamSource(mediaStream);
     let destinationNode = audioContext.createMediaStreamDestination();
 
-    hifiNoiseGate = new AudioWorkletNode(audioContext, 'wasm-noise-gate');
-    setThreshold(isMuteEnabled ? 0.0 : threshold.value);
+    // VoiceFocus
+    voiceFocus = new AudioWorkletNode(audioContext, "voicefocus-inline-processor", {
+        processorOptions: {
+            enabled: isNsEnabled,
+            voiceFocusSampleRate: 48000,
+            executionQuanta: 3,
+            supportFarendStream: false
+        },
+    });
 
-    sourceNode.connect(hifiNoiseGate).connect(destinationNode);
+    if (simdSupported) {
+        //let response = await fetch('https://static.sdkassets.chime.aws/static/voicefocus-default-c100-v1_simd-e7bad7b961a128cf.wasm');
+        let response = await fetch('https://static.sdkassets.chime.aws/static/voicefocus-default-c50-v1_simd-bc418ad1b6ede8b2.wasm');
+        let buffer = await response.arrayBuffer();
+        voiceFocus.port.postMessage({
+            message: "module-buffer",
+            key: "model",
+            buffer,
+        });
+        console.log("VoiceFocus is loaded and", isNsEnabled ? "ENABLED" : "disabled");
+        sourceNode.connect(voiceFocus).connect(destinationNode);
+    } else {
+        alert("Noise Suppression is disabled, no SIMD support");
+        sourceNode.connect(destinationNode);
+    }
+
+    // Noise Gate
+    // hifiNoiseGate = new AudioWorkletNode(audioContext, 'wasm-noise-gate');
+    // setThreshold(isMuteEnabled ? 0.0 : threshold.value);
+    // sourceNode.connect(voiceFocus).connect(hifiNoiseGate).connect(destinationNode);
 
     let destinationTrack = destinationNode.stream.getAudioTracks()[0];
     await localTracks.audioTrack._updateOriginMediaStreamTrack(destinationTrack, false);
@@ -553,6 +592,7 @@ async function startSpatialAudio() {
     console.log("Audio callback latency (samples):", audioContext.sampleRate * audioContext.baseLatency);
 
     await audioContext.audioWorklet.addModule(simdSupported ? 'hifi.wasm.simd.js' : 'hifi.wasm.js');
+    await audioContext.audioWorklet.addModule('https://static.sdkassets.chime.aws/processors/worklet-inline-processor-v1.js');
 
     // temporary license token that expires 1/1/2023
     const token = 'aGlmaQAAAAHLuJ9igD2xY0xxPKza+Rcw9gQGOo8T5k+/HJpF/UR1k99pVS6n6QfyWTz1PTHkpt62tta3jn0Ntbdx73ah/LBv14T1HjJULQE=';
