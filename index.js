@@ -395,15 +395,17 @@ function stopEchoCancellation() {
 
 async function startSpatialAudio() {
 
+    //
+    // audioElement and audioContext are created immediately after a user gesture,
+    // to prevent Safari auto-play policy from breaking the audio pipeline.
+    //
     audioElement = new Audio();
-
     try {
         audioContext = new AudioContext({ sampleRate: 48000 });
     } catch (e) {
         console.log('Web Audio API is not supported by this browser.');
         return;
     }
-
     console.log("Audio callback latency (samples):", audioContext.sampleRate * audioContext.baseLatency);
 
     await audioContext.audioWorklet.addModule(simdSupported ? 'hifi.wasm.simd.js' : 'hifi.wasm.js');
