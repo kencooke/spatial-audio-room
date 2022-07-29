@@ -115,16 +115,21 @@ $("#aec").click(async function(e) {
     }
 })
 
-let voiceFocus = undefined;
+let agoraDenoiser = undefined;
+let agoraProcessor = undefined;
 let isNsEnabled = false;
 $("#ns").click(async function(e) {
     // toggle the state
     isNsEnabled = !isNsEnabled;
     $("#ns").css("background-color", isNsEnabled ? "purple" : "");
 
-    if (voiceFocus !== undefined) {
-        voiceFocus.port.postMessage({ message: isNsEnabled ? "enable" : "disable" });
-        console.log("VoiceFocus:", isNsEnabled ? "ENABLED" : "disabled");
+    if (agoraProcessor !== undefined) {
+        if (isNsEnabled) {
+            agoraProcessor.enable();
+        } else {
+            agoraProcessor.disable();
+        }
+        console.log("agoraDenoiser:", isNsEnabled ? "ENABLED" : "disabled");
     }
 })
 
@@ -315,7 +320,7 @@ async function join() {
         AEC: isAecEnabled,
         AGC: false,
         ANS: false,
-        bypassWebAudio: true,
+        //bypassWebAudio: true,
         encoderConfig: {
             sampleRate: 48000,
             bitrate: 64,
@@ -324,6 +329,7 @@ async function join() {
     };
     localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack(audioConfig);
 
+if (false) {
     //
     // route mic stream through Web Audio noise gate
     //
@@ -366,6 +372,33 @@ async function join() {
 
     let destinationTrack = destinationNode.stream.getAudioTracks()[0];
     await localTracks.audioTrack._updateOriginMediaStreamTrack(destinationTrack, false);
+}
+
+    //
+    // Agora AIDenoiser extension
+    //
+    if (!agoraDenoiser) {
+        agoraDenoiser = new AIDenoiser.AIDenoiserExtension({ assetsPath: './aiDenoiserExtension' });
+        AgoraRTC.registerExtensions([agoraDenoiser]);
+        agoraDenoiser.onloaderror = (e) => {
+            console.log(e);
+        }
+    }
+    if (!agoraProcessor) {
+        agoraProcessor = agoraDenoiser.createProcessor();
+        agoraProcessor.onoverload = async () => {
+            console.log("agoraDenoiser overload!");
+        }
+    }
+
+    if (isNsEnabled) {
+        agoraProcessor.enable();
+    } else {
+        agoraProcessor.disable();
+    }
+    console.log("aiDenoiserExtension is loaded and", isNsEnabled ? "ENABLED" : "disabled");
+
+    localTracks.audioTrack.pipe(agoraProcessor).pipe(localTracks.audioTrack.processorDestination);
 
     // publish local tracks to channel
     await client.publish(Object.values(localTracks));
@@ -595,7 +628,7 @@ async function startSpatialAudio() {
     }
 
     await audioContext.audioWorklet.addModule(simdSupported ? 'hifi.wasm.simd.js' : 'hifi.wasm.js');
-    await audioContext.audioWorklet.addModule('https://static.sdkassets.chime.aws/processors/worklet-inline-processor-v1.js');
+    //await audioContext.audioWorklet.addModule('https://static.sdkassets.chime.aws/processors/worklet-inline-processor-v1.js');
 
     // temporary license token that expires 1/1/2023
     const token = 'aGlmaQAAAAHLuJ9igD2xY0xxPKza+Rcw9gQGOo8T5k+/HJpF/UR1k99pVS6n6QfyWTz1PTHkpt62tta3jn0Ntbdx73ah/LBv14T1HjJULQE=';
